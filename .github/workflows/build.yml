@@ -1,0 +1,173 @@
+name: Build Recipes
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - '*'
+  pull_request:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+  schedule:
+  # Twice per week, on Monday and Thursday
+  - cron: "0 0 * * 1,4"
+
+permissions:
+  contents: write
+
+env:
+  # Increase this value to reset cache if environment.yml has not changed
+  CONDA_CACHE_NUMBER: 0
+  # Increase this value to reset cache if emscripten_version has not changed
+  EMSDK_CACHE_FOLDER: 'emsdk-cache'
+  EMSDK_CACHE_NUMBER: 0
+  CCACHE_DIR: /tmp/.ccache
+  CCACHE_CACHE_NUMBER: 0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -l {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Emscripten ccache
+        run: |
+
+          # FIXME: Installing ccache using `emsdk install ccache-git-emscripten-64bit` doesn't work well in conda env:
+          # https://stackoverflow.com/questions/71340058/conda-does-not-look-for-libpthread-and-libpthread-nonshared-at-the-right-place-w
+          git clone https://github.com/juj/ccache -b emscripten --depth 1
+          cd ccache
+          cmake .
+          make ccache
+          export PATH=$(pwd):$PATH
+          cd ..
+
+          which ccache
+
+      - name: Cache conda
+        uses: actions/cache@v4
+        with:
+          path: ~/conda_pkgs_dir
+          key:
+            ${{ runner.os }}-conda-${{ env.CONDA_CACHE_NUMBER }}-${{
+            hashFiles('environment.yml') }}
+
+      - name: Setup Mambaforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-variant: Mambaforge
+          miniforge-version: latest
+          activate-environment: pyodide-env
+          use-mamba: true
+
+      - name: Get Date
+        id: get-date
+        run: echo "today=$(/bin/date -u '+%Y%m%d')" >> $GITHUB_OUTPUT
+
+      - name: Cache Conda env
+        id: conda-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CONDA }}/envs
+          key:
+            conda-${{ runner.os }}-${{ steps.get-date.outputs.today }}-${{ hashFiles('environment.yml') }}-${{ env.CONDA_CACHE_NUMBER }}
+
+      - name: Update environment if cache miss
+        run:
+          mamba env update -n pyodide-env -f environment.yml
+        if: steps.conda-cache.outputs.cache-hit != 'true'
+
+      - name: Install pyodide-build and build dependencies
+        run : |
+          which python
+          python -m pip install pyodide-build
+          pyodide xbuildenv install
+
+      - name: Check emscripten version
+        run: |
+          echo EMSCRIPTEN_VERSION=$(pyodide config get emscripten_version) >> $GITHUB_ENV
+
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: ${{env.EMSDK_CACHE_FOLDER}}
+          key: ${{env.EMSDK_CACHE_NUMBER}}-${{env.EMSCRIPTEN_VERSION}}-${{ runner.os }}
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+          actions-cache-folder: ${{env.EMSDK_CACHE_FOLDER}}
+
+      - name: Set ccache suffix
+        run: |
+          # This step makes the cache key in the main branch and PRs different.
+          # main branch run a full build, while PRs run a partial build
+          # so we keep the ccache cache separate
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo CCACHE_SUFFIX="-pr" >> $GITHUB_ENV
+          fi
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_DIR }}-${{ env.CCACHE_CACHE_NUMBER }}-${{ env.EMSCRIPTEN_VERSION }}-${{ runner.os }}${{ env.CCACHE_SUFFIX }}
+          restore-keys: |
+            ${{ env.CCACHE_DIR }}-${{ env.CCACHE_CACHE_NUMBER }}-${{ env.EMSCRIPTEN_VERSION }}-${{ runner.os }}
+
+      - name: Build recipes
+        run: |
+          ccache -z
+          export _EMCC_CACHE=1
+
+          pyodide build-recipes "*" --install --install-dir=./repodata
+          ccache -s
+
+      - name: Store artifacts build
+        uses: actions/upload-artifact@v4
+        with:
+          name: repodata
+          path: ./repodata/
+          retention-days: 15
+
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    needs: [build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    environment: deploy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Mambaforge
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-variant: Mambaforge
+          miniforge-version: latest
+          activate-environment: pyodide-env
+          channels: conda-forge
+          use-mamba: true
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: repodata
+          path: ./repodata/
+
+      - name: Install anaconda-client
+        run: |
+          mamba install -c defaults anaconda-client -y
+
+      - name: Upload wheels
+        run: |
+          # Anaconda denies packages with long descriptions, so set summary to null
+          anaconda -t ${{ secrets.ANACONDA_API_TOKEN }} upload --force ./repodata/*.whl --summary=" " --description=" "
