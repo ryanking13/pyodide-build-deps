@@ -3,6 +3,7 @@ dist
 out
 emscripten
 emsdk
+temp
 .pyodide-xbuildenv*
 packages/*/build
 packages/*/build.log

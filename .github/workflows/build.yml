@@ -161,10 +161,6 @@ jobs:
           name: repodata
           path: ./repodata/
 
-      - name: Install anaconda-client
-        run: |
-          mamba install -c defaults anaconda-client -y
-
       - name: Upload wheels
         run: |
           # Anaconda denies packages with long descriptions, so set summary to null

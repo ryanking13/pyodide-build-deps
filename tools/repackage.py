@@ -12,6 +12,8 @@ import argparse
 import subprocess as sp
 import sys
 from pathlib import Path
+import zipfile
+import tempfile
 
 # private API, don't use outside of this script
 from pyodide_build.recipe import load_all_recipes
@@ -38,6 +40,50 @@ def download_native_package(pkg: str, version: str, output_dir: str):
     ])
 
 
+def repackage(pkg: str, version: str, output_dir: Path, wheel_dir: Path, cross_build_files: list[str]):
+    native_wheel = next(output_dir.glob(f"{pkg.replace('-', '_')}*{version}*.whl"))
+    cross_compiled_wheel = next(wheel_dir.glob(f"{pkg.replace('-', '_')}*{version}*.whl"))
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+        native_unpack_dir = temp_dir / "native"
+        cross_unpack_dir = temp_dir / "cross"
+
+        native_unpack_dir.mkdir()
+        cross_unpack_dir.mkdir()
+
+        # Unpack the native wheel
+        with zipfile.ZipFile(native_wheel, 'r') as zip_ref:
+            zip_ref.extractall(native_unpack_dir)
+
+        # Unpack the cross-compiled wheel
+        with zipfile.ZipFile(cross_compiled_wheel, 'r') as zip_ref:
+            zip_ref.extractall(cross_unpack_dir)
+
+        # Replace the cross build files in the native wheel
+        for cross_build_file in cross_build_files:
+            print(f"Replacing {cross_build_file}...")
+            cross_file_path = cross_unpack_dir / cross_build_file
+            if not cross_file_path.exists():
+                print(f"Warning: {cross_build_file} not found in the cross-compiled wheel.")
+                continue
+
+            target_path = native_unpack_dir / cross_build_file
+            if not target_path.exists():
+                print(f"Warning: {cross_build_file} not found in the native wheel.")
+                continue
+            
+            cross_file_path.replace(target_path)
+
+        # Repack the native wheel
+        repackaged_wheel = output_dir / native_wheel.name
+        with zipfile.ZipFile(repackaged_wheel, 'w') as zip_ref:
+            for file in native_unpack_dir.rglob('*'):
+                zip_ref.write(file, file.relative_to(native_unpack_dir))
+
+    print(f"Repackaged {pkg} {version} to {repackaged_wheel}")
+
+
 def main():
     args = parse_args()
     recipe_dir = Path(args.recipe_dir).resolve()
@@ -61,7 +107,8 @@ def main():
         print("Downloading the native package...")
         download_native_package(pkgname, version, str(output_dir))
 
-    print(args)
+        print("Repackaging the package...")
+        repackage(pkgname, version, output_dir, wheel_dir, cross_build_files)
 
 
 if __name__ == "__main__":

@@ -16,3 +16,7 @@ dependencies:
   - wget
   - setuptools
   - gfortran
+  - pip:
+      - requests
+      - packaging
+  - anaconda-client

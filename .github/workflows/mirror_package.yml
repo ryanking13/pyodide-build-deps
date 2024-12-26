@@ -1,0 +1,48 @@
+name: Mirror Package
+
+on:
+    workflow_dispatch:
+      inputs:
+          package:
+            description: 'Package to mirror'
+            required: true
+          version:
+            description: 'Version of the package to mirror'
+            required: true
+
+run-name: Mirror Package (${{ github.event.inputs.package }} ${{ github.event.inputs.version }})
+
+permissions:
+  contents: write
+
+env:
+  # Increase this value to reset cache if environment.yml has not changed
+  CONDA_CACHE_NUMBER: 0
+  ANACONDA_API_TOKEN: ${{ secrets.ANACONDA_API_TOKEN }}
+
+defaults:
+  run:
+    shell: bash -leo pipefail {0}
+
+jobs:
+    run-mirror-package:
+        runs-on: ubuntu-latest
+
+        steps:
+        - name: Checkout repository
+          uses: actions/checkout@v4
+          with:
+            fetch-depth: 0
+
+        - name: Setup Mambaforge
+          uses: mamba-org/setup-micromamba@v2
+          with:
+            environment-file: environment.yml
+            init-shell: >-
+                bash
+            cache-environment: true
+            post-cleanup: 'all'
+        
+        - name: Run mirror_package.py
+          run: |
+            python tools/mirror_package.py ${{ github.event.inputs.package }} ${{ github.event.inputs.version }}
