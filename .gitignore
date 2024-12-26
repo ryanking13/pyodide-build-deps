@@ -1,1 +1,8 @@
 pyodide
+dist
+out
+emscripten
+emsdk
+.pyodide-xbuildenv*
+packages/*/build
+packages/*/build.log
